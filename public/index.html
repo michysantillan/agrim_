@@ -88,12 +88,21 @@ $('btn').addEventListener('click', async () => {
     const pdf = await PDFLib.PDFDocument.load(await file.arrayBuffer(), { updateMetadata: false });
     const page = pdf.getPage(0);
 
-    estado('Generando QR y sello…');
+    estado('Generando QR…');
     const qrImg = await pdf.embedPng(qrComoPng(urlPlano));
 
+    estado('Cargando sello…');
     const resSello = await fetch('/sello.png');
     if (!resSello.ok) throw new Error('Falta el archivo public/sello.png');
-    const sello = await pdf.embedPng(await resSello.arrayBuffer());
+    const b = new Uint8Array(await resSello.arrayBuffer());
+    let sello;
+    if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4E && b[3] === 0x47) {
+      sello = await pdf.embedPng(b);
+    } else if (b[0] === 0xFF && b[1] === 0xD8) {
+      sello = await pdf.embedJpg(b);
+    } else {
+      throw new Error('public/sello.png no es PNG ni JPG (¿es WebP, SVG o PDF?). Conviértelo a PNG y vuelve a subirlo.');
+    }
 
     // Posición según el tamaño real de la página (A0 ≈ 2384 x 3370 pt)
     const { width } = page.getSize();

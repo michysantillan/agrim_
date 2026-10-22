@@ -45,9 +45,29 @@
 </main>
 
 <script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js"></script>
 <script>
 const $ = (id) => document.getElementById(id);
+// Dibuja el QR en un canvas y lo devuelve como PNG (data URL)
+function qrComoPng(texto) {
+  const qr = qrcode(0, 'M');
+  qr.addData(texto);
+  qr.make();
+  const n = qr.getModuleCount();
+  const celda = 10, margen = 4;
+  const size = (n + margen * 2) * celda;
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const g = c.getContext('2d');
+  g.fillStyle = '#fff';
+  g.fillRect(0, 0, size, size);
+  g.fillStyle = '#000';
+  for (let r = 0; r < n; r++)
+    for (let col = 0; col < n; col++)
+      if (qr.isDark(r, col)) g.fillRect((col + margen) * celda, (r + margen) * celda, celda, celda);
+  return c.toDataURL('image/png');
+}
+
 const estado = (t, error = false) => { $('estado').textContent = t; $('estado').className = error ? 'error' : ''; };
 
 $('btn').addEventListener('click', async () => {
@@ -68,8 +88,7 @@ $('btn').addEventListener('click', async () => {
     const page = pdf.getPage(0);
 
     estado('Generando QR y sello…');
-    const qrPng = await QRCode.toDataURL(urlPlano, { margin: 1, width: 400, errorCorrectionLevel: 'M' });
-    const qrImg = await pdf.embedPng(qrPng);
+    const qrImg = await pdf.embedPng(qrComoPng(urlPlano));
 
     const resSello = await fetch('/sello.png');
     if (!resSello.ok) throw new Error('Falta el archivo public/sello.png');

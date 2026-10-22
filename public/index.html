@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sellado de planos</title>
+<style>
+  :root { --fondo:#f2f4f3; --tinta:#1d2b27; --verde:#1f6f5c; --linea:#c9d2ce; --error:#a3322b; }
+  @media (prefers-color-scheme: dark) {
+    :root { --fondo:#141a18; --tinta:#e6ece9; --verde:#4fb59c; --linea:#2f3b37; --error:#e07a72; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--fondo); color:var(--tinta); font:16px/1.5 system-ui, sans-serif; }
+  main { max-width:520px; margin:0 auto; padding:40px 20px; }
+  h1 { font-size:1.5rem; margin:0 0 4px; }
+  p.sub { margin:0 0 28px; opacity:.75; }
+  label { display:block; font-weight:600; margin:18px 0 6px; }
+  input[type=file], input[type=password] {
+    width:100%; padding:12px; border:1px solid var(--linea); border-radius:6px;
+    background:transparent; color:inherit; font:inherit;
+  }
+  button { margin-top:24px; width:100%; padding:14px; border:0; border-radius:6px;
+    background:var(--verde); color:#fff; font:inherit; font-weight:600; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:wait; }
+  :focus-visible { outline:3px solid var(--verde); outline-offset:2px; }
+  #estado { margin-top:20px; min-height:1.5em; }
+  #estado.error { color:var(--error); }
+  #resultado { margin-top:12px; word-break:break-all; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Sellado de planos</h1>
+  <p class="sub">Sube un PDF. Se le agrega el sello y un código QR en la primera página, y se guarda.</p>
+
+  <label for="pdf">Plano en PDF (máx. 30 MB)</label>
+  <input id="pdf" type="file" accept="application/pdf">
+
+  <label for="token">Clave de acceso</label>
+  <input id="token" type="password" autocomplete="current-password">
+
+  <button id="btn" type="button">Sellar y guardar</button>
+  <div id="estado" role="status"></div>
+  <div id="resultado"></div>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+// Dibuja el QR en un canvas y lo devuelve como PNG (data URL)
+function qrComoPng(texto) {
+  const qr = qrcode(0, 'M');
+  qr.addData(texto);
+  qr.make();
+  const n = qr.getModuleCount();
+  const celda = 10, margen = 4;
+  const size = (n + margen * 2) * celda;
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const g = c.getContext('2d');
+  g.fillStyle = '#fff';
+  g.fillRect(0, 0, size, size);
+  g.fillStyle = '#000';
+  for (let r = 0; r < n; r++)
+    for (let col = 0; col < n; col++)
+      if (qr.isDark(r, col)) g.fillRect((col + margen) * celda, (r + margen) * celda, celda, celda);
+  return c.toDataURL('image/png');
+}
+
+let paso = '';
+const estado = (t, error = false) => { if (!error) paso = t; $('estado').textContent = t; $('estado').className = error ? 'error' : ''; };
+
+$('btn').addEventListener('click', async () => {
+  const file = $('pdf').files[0];
+  const token = $('token').value;
+  if (!file) return estado('Elige un archivo PDF.', true);
+  if (!token) return estado('Escribe la clave de acceso.', true);
+  if (file.size > 30 * 1024 * 1024) return estado('El PDF supera los 30 MB.', true);
+
+  $('btn').disabled = true;
+  $('resultado').innerHTML = '';
+  try {
+    const id = crypto.randomUUID();
+    const urlPlano = `${location.origin}/p/${id}`;
+
+    estado('Leyendo el PDF…');
+    const pdf = await PDFLib.PDFDocument.load(await file.arrayBuffer(), { updateMetadata: false });
+    const page = pdf.getPage(0);
+
+    estado('Generando QR y sello…');
+    const qrImg = await pdf.embedPng(qrComoPng(urlPlano));
+
+    const resSello = await fetch('/sello.png');
+    if (!resSello.ok) throw new Error('Falta el archivo public/sello.png');
+    const sello = await pdf.embedPng(await resSello.arrayBuffer());
+
+    // Posición según el tamaño real de la página (A0 ≈ 2384 x 3370 pt)
+    const { width } = page.getSize();
+    const margen = 40, qr = 140;
+    const selloAncho = 280;
+    const selloAlto = selloAncho * (sello.height / sello.width);
+
+    page.drawImage(qrImg, { x: width - qr - margen, y: margen, width: qr, height: qr });
+    page.drawImage(sello, { x: width - qr - margen - selloAncho - 20, y: margen, width: selloAncho, height: selloAlto });
+
+    estado('Guardando…');
+    const bytes = await pdf.save();
+    const res = await fetch(`/api/upload?id=${id}`, {
+      method: 'POST',
+      headers: { 'x-token': token, 'content-type': 'application/pdf' },
+      body: bytes,
+    });
+    if (!res.ok) throw new Error(await res.text());
+
+    estado('Listo. El plano quedó guardado.');
+    $('resultado').innerHTML = `<a href="${urlPlano}" target="_blank" rel="noopener">${urlPlano}</a>`;
+  } catch (e) {
+    console.error(e);
+    const detalle = (e && (e.message || e.name)) || (typeof e === 'string' ? e : JSON.stringify(e)) || 'error desconocido';
+    estado('Falló en el paso «' + paso + '»: ' + detalle, true);
+  } finally {
+    $('btn').disabled = false;
+  }
+});
+</script>
+</body>
+</html>
